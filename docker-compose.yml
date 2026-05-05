@@ -1,0 +1,8 @@
+services:
+  marin-lead-engine:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    command: python app/main.py marin-run-all
