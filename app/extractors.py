@@ -31,27 +31,31 @@ def extract_contacts(html: str) -> Dict[str, List[str]]:
 
 
 def filter_emails(emails: List[str], domain: str) -> Dict[str, List[str]]:
-    good, junk = [], []
+    cleaned = sorted({email.lower().strip() for email in emails if email})
     same_domain = []
-    free_domains = ("gmail.com", "outlook.com", "yahoo.com")
-    for email in emails:
-        e = email.lower()
-        if any(x in e for x in JUNK_FRAGMENTS):
+    free_domain = []
+    other_good = []
+    junk = []
+    free_domains = ("gmail.com", "outlook.com", "yahoo.com", "hotmail.com", "aol.com")
+
+    for email in cleaned:
+        if any(x in email for x in JUNK_FRAGMENTS):
             junk.append(email)
             continue
-        local, _, host = e.partition("@")
+        local, _, host = email.partition("@")
         if host == domain or host.endswith("." + domain):
             same_domain.append(email)
-            good.append(email)
-            continue
-        if host in free_domains:
-            if same_domain:
-                junk.append(email)
-            else:
-                good.append(email)
-            continue
-        if local in COMMON_GOOD:
-            good.append(email)
+        elif host in free_domains:
+            free_domain.append(email)
+        elif local in COMMON_GOOD:
+            other_good.append(email)
         else:
             junk.append(email)
+
+    if same_domain:
+        good = same_domain + other_good
+        junk.extend(free_domain)
+    else:
+        good = other_good + free_domain
+
     return {"good": sorted(set(good)), "junk": sorted(set(junk))}

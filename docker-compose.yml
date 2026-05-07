@@ -1,8 +1,33 @@
 services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: dreamprotocol-searxng
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8080/
+      - SEARXNG_SECRET_KEY=change-me
+    networks:
+      - dreamprotocol-net
+
   marin-lead-engine:
     build: .
+    container_name: dreamprotocol-marin-lead-engine
+    depends_on:
+      - searxng
     env_file:
       - .env
     volumes:
       - ./data:/app/data
-    command: python app/main.py marin-run-all
+    environment:
+      - SEARXNG_BASE_URL=http://searxng:8080
+      - PYTHONPATH=/app
+    command: python -m app.main marin-run-all
+    networks:
+      - dreamprotocol-net
+
+networks:
+  dreamprotocol-net:
