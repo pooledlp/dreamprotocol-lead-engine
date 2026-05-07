@@ -1,6 +1,6 @@
-# DreamProtocol Lead Engine (Marin County + SearXNG)
+# DreamProtocol Lead Engine (Bay Area + SearXNG)
 
-DreamProtocol Lead Engine discovers Marin County business websites through a self-hosted SearXNG service, crawls public business websites, extracts public contact signals, scores leads, and exports CSVs.
+DreamProtocol Lead Engine discovers Bay Area SMB websites through a self-hosted SearXNG service, crawls public business websites safely over repeated runs, extracts public contact signals, scores leads, and exports segmented CSVs.
 
 ## Safety and scope
 
@@ -10,15 +10,30 @@ DreamProtocol Lead Engine discovers Marin County business websites through a sel
 - No social media scraping.
 - No login bypass.
 - No email sending.
-- Crawl delays, request timeouts, user-agent configuration, and progress logging are built in.
+- Crawl delays, request timeouts, user-agent configuration, crawl state, recrawl windows, and progress logging are built in.
+- The crawler is designed to scale toward 10,000+ leads over multiple runs without recrawling recently crawled domains.
+
+## Supported regions
+
+Use one of these region slugs with `discover-websites` or `run-region`:
+
+- `north-bay`: San Rafael, Novato, Mill Valley, Sausalito, Petaluma, Napa, Sonoma, Santa Rosa
+- `east-bay`: Oakland, Berkeley, Alameda, Walnut Creek, Concord, Fremont, Hayward, Dublin, Pleasanton, Livermore, Richmond
+- `peninsula`: San Mateo, Burlingame, Redwood City, Palo Alto, Menlo Park, Mountain View
+- `south-bay`: San Jose, Santa Clara, Sunnyvale, Cupertino, Campbell, Los Gatos
+- `san-francisco`: San Francisco
+- `all-bay-area`: all cities above
+
+`discover-marin` and `marin-run-all` remain available as backward-compatible aliases for the North Bay workflow.
 
 ## Architecture
 
 1. Docker Compose starts `searxng` with JSON output enabled.
 2. `marin-lead-engine` calls `http://searxng:8080/search?q=...&format=json`.
-3. Discovery generates Marin County city/category queries and keeps likely official business websites.
+3. Discovery generates region city/category queries and keeps likely official business websites.
 4. The crawler visits each discovered site, stays on the same domain, follows useful public pages, and extracts contact signals.
-5. Exports write CSVs into `data/`.
+5. Crawl state is persisted in JSON so interrupted runs can resume and recent domains can be skipped.
+6. Exports write CSVs into `data/`.
 
 ## SearXNG JSON configuration
 
@@ -50,14 +65,17 @@ Copy `.env.example` to `.env` before running in Docker:
 cp .env.example .env
 ```
 
-Important defaults:
+Important safe scaling defaults:
 
 ```env
 SEARXNG_BASE_URL=http://searxng:8080
 DISCOVERY_PROVIDER=searxng
-MAX_DISCOVERY_QUERIES_PER_RUN=30
+MAX_DISCOVERY_QUERIES_PER_RUN=100
+MAX_DOMAINS_PER_RUN=500
+MAX_CONCURRENT_CRAWLS=5
 MAX_RESULTS_PER_QUERY=10
-MAX_PAGES_PER_SITE=10
+MAX_PAGES_PER_SITE=8
+DOMAIN_RECRAWL_DAYS=30
 CRAWL_DELAY_SECONDS=2
 REQUEST_TIMEOUT_SECONDS=12
 APP_USER_AGENT=DreamProtocolLeadResearch/1.0 contact: hello@dreamprotocol.ai
@@ -68,13 +86,30 @@ APP_USER_AGENT=DreamProtocolLeadResearch/1.0 contact: hello@dreamprotocol.ai
 From a local Python environment:
 
 ```bash
-python -m app.main discover-marin
+python -m app.main discover-websites north-bay
+python -m app.main discover-websites east-bay
+python -m app.main discover-websites peninsula
+python -m app.main discover-websites south-bay
+python -m app.main discover-websites san-francisco
+python -m app.main discover-websites all-bay-area
 python -m app.main crawl-websites
 python -m app.main export
-python -m app.main marin-run-all
+python -m app.main run-region all-bay-area
 ```
 
-`marin-run-all` waits up to 60 seconds for SearXNG JSON search to become reachable, then runs discovery, crawling, and export.
+`run-region` waits up to 60 seconds for SearXNG JSON search to become reachable, then runs discovery, crawling, and export.
+
+## Cron automation scripts
+
+Use the checked-in scripts from cron or a shell session:
+
+```bash
+scripts/run_north_bay.sh
+scripts/run_east_bay.sh
+scripts/run_peninsula.sh
+scripts/run_south_bay.sh
+scripts/run_all_bay_area.sh
+```
 
 ## Docker / Linode runbook
 
@@ -94,16 +129,31 @@ Check generated CSVs:
 
 ```bash
 find data -maxdepth 1 -type f -name "*.csv" -ls
-head -20 data/marin_high_score_leads.csv
+head -20 data/bayarea_hot_leads.csv
 ```
 
-Download the high-score leads CSV from Windows PowerShell:
+## State files
 
-```powershell
-scp -i C:\WINDOWS\system32\y root@YOUR_LINODE_IP:/opt/dreamprotocol-lead-engine/data/marin_high_score_leads.csv "$env:USERPROFILE\Downloads\marin_high_score_leads.csv"
-```
+These JSON files are written under `data/`:
+
+- `crawled_domains.json`: domains and last crawl timestamps.
+- `failed_domains.json`: domains that failed, with error and timestamp.
+- `crawl_progress.json`: discovery query cursors and crawl progress counters.
+
+Domains crawled within `DOMAIN_RECRAWL_DAYS` (default `30`) are skipped, which allows repeated cron runs to expand coverage without duplicate crawling.
 
 ## CSV outputs
+
+Primary Bay Area exports:
+
+- `data/bayarea_all_leads.csv`
+- `data/bayarea_hot_leads.csv`
+- `data/bayarea_phone_heavy.csv`
+- `data/bayarea_medical.csv`
+- `data/bayarea_contractors.csv`
+- `data/bayarea_property_management.csv`
+
+Backward-compatible Marin exports are still written:
 
 - `data/marin_discovered_websites.csv`
 - `data/marin_all_leads.csv`
@@ -112,36 +162,41 @@ scp -i C:\WINDOWS\system32\y root@YOUR_LINODE_IP:/opt/dreamprotocol-lead-engine/
 - `data/marin_no_email_contact_form_leads.csv`
 - `data/marin_junk_filtered_emails.csv`
 
-## Discovery logging
+## Discovery and crawl logging
 
 Expected progress logs look like:
 
 ```text
-[DISCOVER] Generated 1080 possible queries, running first 30
-[DISCOVER] Searching 1/30: San Rafael dentist contact
+[DISCOVER] Region=all-bay-area generated 5616 possible queries; resuming at 1, running 100
+[DISCOVER] Searching 1/5616: San Rafael dentist contact
 [DISCOVER] Found 8 results
 [DISCOVER] Added domain example.com
-[DISCOVER] Wrote data/marin_discovered_websites.csv with 42 discovered websites
-[CRAWL] Crawling 1/42: https://example.com
-[EXPORT] Wrote data/marin_high_score_leads.csv
+[CRAWL] Loaded 500 discovered domains; skipped 120 recently crawled; queued 380
+[CRAWL] Starting https://example.com
+[EXTRACT] example.com emails=True phones=2
+[CRAWL] 422/10000
+[EXPORT] Wrote data/bayarea_hot_leads.csv rows=87
 ```
 
-## Lead scoring
+## Lead scoring and enrichment
 
-- Public email found: +20
-- Phone found: +10
-- Contact page found: +10
-- Contact form found: +10
-- No chatbot found: +10
-- No online booking found: +10
-- High-value category: +20
-- Appointment-heavy category: +10
-- Quote-heavy category: +10
-- Phone-heavy category: +10
-- Marin city match: +10
+The score boosts signals such as:
 
-Priority bands:
+- Public email, phone, contact page, and contact forms.
+- WordPress/Wix sites.
+- No chatbot.
+- No online booking.
+- Quote-heavy language or quote pages.
+- Emergency-service and after-hours language.
+- Phone-heavy businesses.
+- High-value categories.
 
-- Hot: 80+
-- Warm: 60-79
-- Low: below 60
+The export rows include:
+
+- `business_type`
+- `likely_after_hours_opportunity`
+- `likely_missed_call_risk`
+- `likely_quote_driven`
+- `likely_dispatch_driven`
+
+Pain angles are tailored by business type, including emergency-call and dispatch angles for contractors, appointment/intake angles for dental and wellness businesses, and maintenance/tenant/showing coordination angles for property management.

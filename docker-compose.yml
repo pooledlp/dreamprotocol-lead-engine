@@ -25,7 +25,7 @@ services:
     environment:
       - SEARXNG_BASE_URL=http://searxng:8080
       - PYTHONPATH=/app
-    command: python -m app.main marin-run-all
+    command: python -m app.main run-region all-bay-area
     networks:
       - dreamprotocol-net
 

@@ -5,7 +5,7 @@ import time
 import requests
 
 from app.crawler import crawl_discovered_websites
-from app.discover_marin import JSON_ERROR, discover_marin_websites
+from app.discover_marin import JSON_ERROR, REGIONS, discover_marin_websites, discover_websites
 from app.exporters import export_all
 
 
@@ -47,23 +47,36 @@ def wait_for_searxng(timeout_seconds: int = 60) -> bool:
     return False
 
 
+def run_region(region: str) -> None:
+    if not wait_for_searxng():
+        raise SystemExit(1)
+    discover_websites(region)
+    crawl_discovered_websites()
+    export_all()
+
+
 def main() -> None:
     if len(sys.argv) < 2:
-        raise SystemExit("Usage: python -m app.main [discover-marin|crawl-websites|export|marin-run-all]")
+        valid_regions = "|".join(REGIONS)
+        raise SystemExit(
+            "Usage: python -m app.main "
+            f"[discover-marin|discover-websites <{valid_regions}>|crawl-websites|export|marin-run-all|run-region <{valid_regions}>]"
+        )
 
     command = sys.argv[1]
+    region = sys.argv[2] if len(sys.argv) > 2 else os.getenv("REGION", "north-bay")
     if command == "discover-marin":
         discover_marin_websites()
+    elif command == "discover-websites":
+        discover_websites(region)
     elif command == "crawl-websites":
         crawl_discovered_websites()
     elif command == "export":
         export_all()
     elif command == "marin-run-all":
-        if not wait_for_searxng():
-            raise SystemExit(1)
-        discover_marin_websites()
-        crawl_discovered_websites()
-        export_all()
+        run_region("north-bay")
+    elif command == "run-region":
+        run_region(region)
     else:
         raise SystemExit(f"Unknown command: {command}")
 
