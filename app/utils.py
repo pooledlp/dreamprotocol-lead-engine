@@ -27,17 +27,54 @@ DIRECTORY_DOMAINS = {
     "manta.com",
     "chamberofcommerce.com",
     "bbb.org",
+    "angi.com",
+    "angieslist.com",
+    "homeadvisor.com",
+    "thumbtack.com",
+    "opencare.com",
+    "zocdoc.com",
+    "healthgrades.com",
+    "tripadvisor.com",
+    "booking.com",
+    "mapcarta.com",
 }
+
+
+def ensure_http_url(url: str) -> str:
+    if not url:
+        return ""
+    cleaned = url.strip()
+    if cleaned.startswith("//"):
+        return f"https:{cleaned}"
+    if cleaned.startswith(("http://", "https://")):
+        return cleaned
+    return f"https://{cleaned}"
 
 
 def normalize_domain(url: str) -> str:
     if not url:
         return ""
-    parsed = urlparse(url if url.startswith(("http://", "https://")) else f"https://{url}")
+    parsed = urlparse(ensure_http_url(url))
     host = parsed.netloc.lower().strip()
     if host.startswith("www."):
         host = host[4:]
-    return host
+    return host.split(":", 1)[0]
+
+
+
+
+def registrable_domain(url_or_domain: str) -> str:
+    domain = normalize_domain(url_or_domain)
+    if not domain:
+        return ""
+    parts = domain.split(".")
+    if len(parts) <= 2:
+        return domain
+    two_part_suffixes = {"co.uk", "com.au", "com.br", "co.nz", "com.mx"}
+    suffix = ".".join(parts[-2:])
+    if suffix in two_part_suffixes and len(parts) >= 3:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
 
 
 def is_social(url: str) -> bool:
@@ -50,11 +87,31 @@ def is_directory(url: str) -> bool:
     return any(domain.endswith(d) for d in DIRECTORY_DOMAINS)
 
 
+MARIN_TERMS = {
+    "marin",
+    "san rafael",
+    "novato",
+    "mill valley",
+    "sausalito",
+    "larkspur",
+    "corte madera",
+    "tiburon",
+    "san anselmo",
+    "fairfax",
+    "greenbrae",
+    "kentfield",
+    "ross",
+    "belvedere",
+    "point reyes",
+    "marin city",
+}
+
+
 def likely_marin(text: str) -> bool:
     if not text:
         return False
     t = text.lower()
-    return "marin" in t or "ca" in t or "california" in t
+    return any(term in t for term in MARIN_TERMS) or " ca" in t or "california" in t
 
 
 def slug_id(*parts: str) -> str:
@@ -65,8 +122,8 @@ def dedupe_records(records: Iterable[Dict[str, str]]) -> List[Dict[str, str]]:
     seen = set()
     output = []
     for row in records:
-        key = (normalize_domain(row.get("website", "")), row.get("business_name", "").strip().lower())
-        if key in seen:
+        key = normalize_domain(row.get("website", ""))
+        if not key or key in seen:
             continue
         seen.add(key)
         output.append(row)
