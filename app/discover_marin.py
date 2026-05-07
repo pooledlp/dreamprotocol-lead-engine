@@ -13,16 +13,28 @@ from .utils import (
     ensure_http_url,
     is_directory,
     is_social,
-    likely_marin,
+    likely_bay_area,
+    load_json,
     normalize_domain,
     read_csv,
+    save_json,
     write_csv,
 )
 
-CITIES = [
-    "San Rafael", "Novato", "Mill Valley", "Sausalito", "Larkspur", "Corte Madera", "Tiburon",
-    "San Anselmo", "Fairfax", "Greenbrae", "Kentfield", "Ross", "Belvedere", "Point Reyes", "Marin City",
-]
+REGIONS: Dict[str, List[str]] = {
+    "north-bay": ["San Rafael", "Novato", "Mill Valley", "Sausalito", "Petaluma", "Napa", "Sonoma", "Santa Rosa"],
+    "east-bay": [
+        "Oakland", "Berkeley", "Alameda", "Walnut Creek", "Concord", "Fremont", "Hayward", "Dublin",
+        "Pleasanton", "Livermore", "Richmond",
+    ],
+    "peninsula": ["San Mateo", "Burlingame", "Redwood City", "Palo Alto", "Menlo Park", "Mountain View"],
+    "south-bay": ["San Jose", "Santa Clara", "Sunnyvale", "Cupertino", "Campbell", "Los Gatos"],
+    "san-francisco": ["San Francisco"],
+}
+REGIONS["all-bay-area"] = [city for region in REGIONS.values() for city in region]
+
+# Backward-compatible Marin alias: Marin cities are covered by north-bay.
+CITIES = REGIONS["north-bay"]
 
 CATEGORIES = [
     "dentist", "dental office", "med spa", "chiropractor", "veterinary clinic", "HVAC", "plumber",
@@ -95,10 +107,21 @@ class SearXNGProvider:
         return rows
 
 
-def generate_queries() -> List[Dict[str, str]]:
+def normalize_region(region: str | None) -> str:
+    value = (region or os.getenv("REGION") or "north-bay").strip().lower()
+    if value == "marin":
+        return "north-bay"
+    if value not in REGIONS:
+        valid = ", ".join(sorted(REGIONS))
+        raise ValueError(f"Unknown region '{value}'. Valid regions: {valid}")
+    return value
+
+
+def generate_queries(region: str | None = None) -> List[Dict[str, str]]:
+    region_name = normalize_region(region)
     return [
-        {"city": city, "category": category, "query": pattern.format(city=city, category=category)}
-        for city in CITIES
+        {"region": region_name, "city": city, "category": category, "query": pattern.format(city=city, category=category)}
+        for city in REGIONS[region_name]
         for category in CATEGORIES
         for pattern in QUERY_PATTERNS
     ]
@@ -117,24 +140,40 @@ def _looks_like_business_site(row: Dict[str, str], city: str) -> bool:
     if domain.endswith("yelp.com") and path:
         return False
     text = f"{city} {row.get('business_name', '')} {row.get('snippet', '')} {website}"
-    return likely_marin(text)
+    return likely_bay_area(text)
 
 
-def discover_marin_websites() -> List[Dict[str, str]]:
+def _progress_key(region: str) -> str:
+    return f"discover:{region}"
+
+
+def discover_websites(region: str | None = None) -> List[Dict[str, str]]:
+    region_name = normalize_region(region)
     provider = SearXNGProvider()
-    all_queries = generate_queries()
-    max_queries = int(os.getenv("MAX_DISCOVERY_QUERIES_PER_RUN", "30"))
-    queries = all_queries[:max_queries]
-    print(f"[DISCOVER] Generated {len(all_queries)} possible queries, running first {len(queries)}", flush=True)
+    all_queries = generate_queries(region_name)
+    max_queries = int(os.getenv("MAX_DISCOVERY_QUERIES_PER_RUN", "100"))
+    max_domains = int(os.getenv("MAX_DOMAINS_PER_RUN", "500"))
+    progress = load_json(DATA_DIR / "crawl_progress.json", {})
+    start_index = int(progress.get(_progress_key(region_name), {}).get("next_query_index", 0))
+    queries = all_queries[start_index:start_index + max_queries]
+    print(
+        f"[DISCOVER] Region={region_name} generated {len(all_queries)} possible queries; "
+        f"resuming at {start_index + 1}, running {len(queries)}",
+        flush=True,
+    )
 
-    discovered: List[Dict[str, str]] = []
-    seen_domains = set()
+    previous = read_csv(DATA_DIR / "bayarea_discovered_websites.csv")
+    discovered: List[Dict[str, str]] = previous[:]
+    seen_domains = {normalize_domain(r.get("website", "")) for r in previous if r.get("website")}
 
-    for index, q in enumerate(queries, start=1):
-        print(f"[DISCOVER] Searching {index}/{len(queries)}: {q['query']}", flush=True)
+    for offset, q in enumerate(queries, start=start_index):
+        print(f"[DISCOVER] Searching {offset + 1}/{len(all_queries)}: {q['query']}", flush=True)
         results = provider.search(q["query"])
         print(f"[DISCOVER] Found {len(results)} results", flush=True)
         for row in results:
+            if len(discovered) >= max_domains + len(previous):
+                print(f"[DISCOVER] Reached MAX_DOMAINS_PER_RUN={max_domains}", flush=True)
+                break
             website = ensure_http_url(row.get("website", ""))
             row["website"] = website
             domain = normalize_domain(website)
@@ -142,10 +181,14 @@ def discover_marin_websites() -> List[Dict[str, str]]:
                 continue
             if not _looks_like_business_site(row, q["city"]):
                 continue
-            row.update({"city": q["city"], "category": q["category"], "domain": domain})
+            row.update({"region": region_name, "city": q["city"], "category": q["category"], "domain": domain})
             discovered.append(row)
             seen_domains.add(domain)
             print(f"[DISCOVER] Added domain {domain}", flush=True)
+        progress[_progress_key(region_name)] = {"next_query_index": offset + 1, "total_queries": len(all_queries)}
+        save_json(DATA_DIR / "crawl_progress.json", progress)
+        if len(discovered) >= max_domains + len(previous):
+            break
 
     manual = read_csv(DATA_DIR / "websites.csv")
     for m in manual:
@@ -157,12 +200,20 @@ def discover_marin_websites() -> List[Dict[str, str]]:
         m.setdefault("provider", "manual")
         m.setdefault("listing_url", website)
         m.setdefault("domain", domain)
+        m.setdefault("region", region_name)
         discovered.append(m)
         seen_domains.add(domain)
         print(f"[DISCOVER] Added domain {domain}", flush=True)
 
     discovered = dedupe_records(discovered)
-    output_path = DATA_DIR / "marin_discovered_websites.csv"
+    output_path = DATA_DIR / "bayarea_discovered_websites.csv"
     write_csv(output_path, discovered)
+    # Backward-compatible output for existing Marin workflows.
+    if region_name == "north-bay":
+        write_csv(DATA_DIR / "marin_discovered_websites.csv", discovered)
     print(f"[DISCOVER] Wrote {output_path} with {len(discovered)} discovered websites", flush=True)
     return discovered
+
+
+def discover_marin_websites() -> List[Dict[str, str]]:
+    return discover_websites("north-bay")

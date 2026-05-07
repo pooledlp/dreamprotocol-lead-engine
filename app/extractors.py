@@ -3,6 +3,8 @@ from typing import Dict, List, Set
 
 from bs4 import BeautifulSoup
 
+from .utils import normalize_phone_list
+
 JUNK_FRAGMENTS = [
     "example.com", "domain.com", "wordpress.com", "wix.com", "squarespace.com", "godaddy", "namecheap",
     "cloudflare", "sentry", "schema.org", "noreply", "no-reply", "abuse", "privacy", "hostmaster",
@@ -26,7 +28,7 @@ def extract_contacts(html: str) -> Dict[str, List[str]]:
     phones = set(PHONE_RE.findall(text)) | tel_links
 
     emails = list({e.lower() for e in (mailtos | visibles | schema_emails) if e})
-    phones_clean = sorted({p.strip() for p in phones if p})
+    phones_clean = normalize_phone_list(phones)
     return {"emails": sorted(emails), "phones": phones_clean}
 
 

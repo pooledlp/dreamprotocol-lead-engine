@@ -3,4 +3,4 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-CMD ["python", "app/main.py", "marin-run-all"]
+CMD ["python", "-m", "app.main", "run-region", "all-bay-area"]

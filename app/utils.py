@@ -1,9 +1,12 @@
 import csv
 import hashlib
+import json
 import os
 import re
+from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Dict, Iterable, List
+from datetime import datetime, timezone
+from typing import Any, Dict, Iterable, List
 from urllib.parse import urlparse
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "data"))
@@ -87,45 +90,81 @@ def is_directory(url: str) -> bool:
     return any(domain.endswith(d) for d in DIRECTORY_DOMAINS)
 
 
-MARIN_TERMS = {
-    "marin",
-    "san rafael",
-    "novato",
-    "mill valley",
-    "sausalito",
-    "larkspur",
-    "corte madera",
-    "tiburon",
-    "san anselmo",
-    "fairfax",
-    "greenbrae",
-    "kentfield",
-    "ross",
-    "belvedere",
-    "point reyes",
-    "marin city",
+BAY_AREA_TERMS = {
+    "bay area", "marin", "north bay", "east bay", "peninsula", "south bay", "san francisco",
+    "san rafael", "novato", "mill valley", "sausalito", "petaluma", "napa", "sonoma", "santa rosa",
+    "oakland", "berkeley", "alameda", "walnut creek", "concord", "fremont", "hayward",
+    "dublin", "pleasanton", "livermore", "richmond",
+    "san mateo", "burlingame", "redwood city", "palo alto", "menlo park", "mountain view",
+    "san jose", "santa clara", "sunnyvale", "cupertino", "campbell", "los gatos",
 }
 
 
-def likely_marin(text: str) -> bool:
+def likely_bay_area(text: str) -> bool:
     if not text:
         return False
     t = text.lower()
-    return any(term in t for term in MARIN_TERMS) or " ca" in t or "california" in t
+    return any(term in t for term in BAY_AREA_TERMS) or " ca" in t or "california" in t
+
+
+def likely_marin(text: str) -> bool:
+    return likely_bay_area(text)
 
 
 def slug_id(*parts: str) -> str:
     return hashlib.md5("|".join(parts).encode("utf-8")).hexdigest()[:12]
 
 
+def normalize_phone(value: str) -> str:
+    digits = re.sub(r"\D", "", value or "")
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    if len(digits) != 10:
+        return ""
+    return f"{digits[:3]}-{digits[3:6]}-{digits[6:]}"
+
+
+def normalize_phone_list(values: Iterable[str] | str) -> List[str]:
+    if isinstance(values, str):
+        parts = re.split(r"[;,|]\s*", values)
+    else:
+        parts = list(values)
+    return sorted({phone for phone in (normalize_phone(part) for part in parts) if phone})
+
+
+def normalize_business_name(value: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9 ]+", " ", (value or "").lower())
+    cleaned = re.sub(r"\b(inc|llc|corp|corporation|company|co|the|official|website|home)\b", " ", cleaned)
+    return clean_text(cleaned)
+
+
+def _business_name_similar(left: str, right: str) -> bool:
+    left_name = normalize_business_name(left)
+    right_name = normalize_business_name(right)
+    if not left_name or not right_name:
+        return False
+    return SequenceMatcher(None, left_name, right_name).ratio() >= 0.88
+
+
 def dedupe_records(records: Iterable[Dict[str, str]]) -> List[Dict[str, str]]:
-    seen = set()
+    seen_domains = set()
+    seen_phones = set()
     output = []
     for row in records:
         key = normalize_domain(row.get("website", ""))
-        if not key or key in seen:
+        phones = set(normalize_phone_list(row.get("primary_phone") or row.get("phones", "")))
+        name = row.get("business_name", "")
+        if key and key in seen_domains:
             continue
-        seen.add(key)
+        if phones and phones & seen_phones:
+            continue
+        if any(_business_name_similar(name, existing.get("business_name", "")) for existing in output):
+            continue
+        if key:
+            seen_domains.add(key)
+        seen_phones.update(phones)
+        if phones and not row.get("primary_phone"):
+            row["primary_phone"] = sorted(phones)[0]
         output.append(row)
     return output
 
@@ -153,3 +192,24 @@ def clean_text(value: str) -> str:
     if not value:
         return ""
     return re.sub(r"\s+", " ", value).strip()
+
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def load_json(path: Path, default: Any) -> Any:
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return default
+
+
+def save_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
