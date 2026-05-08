@@ -1,0 +1,15 @@
+[app]
+# Listmonk admin/listener address. LISTMONK_app__address in docker-compose.yml
+# also sets this value explicitly for container startup.
+address = "0.0.0.0:9000"
+
+[db]
+host = "db"
+port = 5432
+user = "listmonk"
+password = ""
+database = "listmonk"
+ssl_mode = "disable"
+max_open = 25
+max_idle = 25
+max_lifetime = "300s"
